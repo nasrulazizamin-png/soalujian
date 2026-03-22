@@ -1,0 +1,465 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { BookOpen, Copy, Printer, Loader2, CheckCircle2, AlertCircle, FileText } from 'lucide-react';
+
+export default function App() {
+  const [material, setMaterial] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [copySuccess, setCopySuccess] = useState('');
+  
+  const printRef = useRef(null);
+
+  // Load Google Font for Arabic
+  useEffect(() => {
+    const link = document.createElement('link');
+    link.href = 'https://fonts.googleapis.com/css2?family=Amiri:ital,wght@0,400;0,700;1,400&family=Cairo:wght@400;600;700&display=swap';
+    link.rel = 'stylesheet';
+    document.head.appendChild(link);
+    return () => document.head.removeChild(link);
+  }, []);
+
+  const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  const callGeminiAPI = async (text, attempt = 1) => {
+    const apiKey = ""; // API key is provided by the execution environment
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+    const systemInstruction = `Anda adalah seorang ahli bahasa Arab (فصحى) dan pengajar profesional yang berpengalaman dalam menyusun soal ujian berkualitas tinggi di Timur Tengah.
+Tugas Anda: Buat soal ujian bahasa Arab berdasarkan materi yang diberikan pengguna.
+Syarat mutlak:
+1. GUNAKAN BAHASA ARAB FUSHA YANG BENAR secara nahwu dan shorof.
+2. Hindari terjemahan kaku dari bahasa Indonesia. Gunakan gaya bahasa/uslub ujian standar Arab.
+3. Gunakan harakat pada kata-kata yang mungkin ambigu (dhabt bisy-syakl).
+4. Buat tepat: 3 soal Pilihan Ganda (pemahaman teks), 3 soal Benar/Salah, dan 1 soal Essay (HOTS/Pemahaman mendalam).
+5. Output harus mengikuti skema JSON yang ditentukan.`;
+
+    const schema = {
+      type: "OBJECT",
+      properties: {
+        mcq: {
+          type: "ARRAY",
+          description: "3 Soal Pilihan Ganda",
+          items: {
+            type: "OBJECT",
+            properties: {
+              question: { type: "STRING", description: "Pertanyaan dalam bahasa Arab Fusha" },
+              options: {
+                type: "OBJECT",
+                properties: {
+                  A: { type: "STRING" },
+                  B: { type: "STRING" },
+                  C: { type: "STRING" },
+                  D: { type: "STRING" }
+                }
+              },
+              correctOption: { type: "STRING", description: "Hanya huruf A, B, C, atau D" }
+            }
+          }
+        },
+        tf: {
+          type: "ARRAY",
+          description: "3 Soal Benar/Salah",
+          items: {
+            type: "OBJECT",
+            properties: {
+              statement: { type: "STRING", description: "Pernyataan dalam bahasa Arab Fusha" },
+              isTrue: { type: "BOOLEAN", description: "True jika صح, False jika خطأ" }
+            }
+          }
+        },
+        essay: {
+          type: "OBJECT",
+          description: "1 Soal Essay",
+          properties: {
+            question: { type: "STRING", description: "Pertanyaan essay dalam bahasa Arab Fusha" },
+            guidance: { type: "STRING", description: "Kunci/Panduan jawaban essay dalam bahasa Arab" }
+          }
+        }
+      },
+      required: ["mcq", "tf", "essay"]
+    };
+
+    const payload = {
+      contents: [{ parts: [{ text: `Buatkan soal ujian bahasa Arab dari materi ini:\n\n${text}` }] }],
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: schema,
+        temperature: 0.7
+      }
+    };
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (!responseText) throw new Error("Format respons tidak valid dari API.");
+      
+      return JSON.parse(responseText);
+    } catch (err) {
+      if (attempt <= 5) {
+        const backoff = Math.pow(2, attempt - 1) * 1000;
+        await delay(backoff);
+        return callGeminiAPI(text, attempt + 1);
+      }
+      throw err;
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!material.trim()) {
+      setError('Silakan masukkan materi terlebih dahulu.');
+      return;
+    }
+    
+    setIsLoading(true);
+    setError('');
+    setResult(null);
+    setCopySuccess('');
+
+    try {
+      const generatedData = await callGeminiAPI(material);
+      setResult(generatedData);
+    } catch (err) {
+      console.error(err);
+      setError('Gagal menghasilkan soal. Pastikan koneksi internet Anda stabil atau coba beberapa saat lagi.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCopy = () => {
+    if (!result) return;
+
+    let textToCopy = `أسئلة اختبار اللغة العربية\n\n`;
+    
+    // MCQ
+    textToCopy += `أولاً: اختر الإجابة الصحيحة (أ، ب، ج، د)\n`;
+    result.mcq.forEach((q, i) => {
+      textToCopy += `${i + 1}. ${q.question}\n`;
+      textToCopy += `   أ) ${q.options.A}\n`;
+      textToCopy += `   ب) ${q.options.B}\n`;
+      textToCopy += `   ج) ${q.options.C}\n`;
+      textToCopy += `   د) ${q.options.D}\n\n`;
+    });
+
+    // TF
+    textToCopy += `ثانياً: ضع علامة (صح) أو (خطأ) أمام العبارات التالية\n`;
+    result.tf.forEach((q, i) => {
+      textToCopy += `${i + 1}. (   ) ${q.statement}\n`;
+    });
+    textToCopy += `\n`;
+
+    // Essay
+    textToCopy += `ثالثاً: أجب عن السؤال التالي بالتفصيل\n`;
+    textToCopy += `1. ${result.essay.question}\n\n`;
+
+    // Key
+    textToCopy += `=======================\n`;
+    textToCopy += `مفتاح الإجابة (Kunci Jawaban)\n`;
+    textToCopy += `أولاً (الاختياري):\n`;
+    result.mcq.forEach((q, i) => {
+      textToCopy += `${i + 1}. ${q.correctOption}\n`;
+    });
+    textToCopy += `\nثانياً (صح / خطأ):\n`;
+    result.tf.forEach((q, i) => {
+      textToCopy += `${i + 1}. ${q.isTrue ? 'صح' : 'خطأ'}\n`;
+    });
+    textToCopy += `\nثالثاً (المقالي):\n`;
+    textToCopy += `${result.essay.guidance}\n`;
+
+    // Try standard clipboard API first, fallback to execCommand
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(textToCopy).then(() => {
+            showCopySuccess();
+        }).catch(() => fallbackCopyTextToClipboard(textToCopy));
+    } else {
+        fallbackCopyTextToClipboard(textToCopy);
+    }
+  };
+
+  const fallbackCopyTextToClipboard = (text) => {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed";
+    textArea.style.left = "-999999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    try {
+        document.execCommand('copy');
+        showCopySuccess();
+    } catch (err) {
+        console.error('Fallback: Oops, unable to copy', err);
+        setError("Gagal menyalin teks ke clipboard.");
+    }
+    document.body.removeChild(textArea);
+  };
+
+  const showCopySuccess = () => {
+    setCopySuccess('Teks berhasil disalin!');
+    setTimeout(() => setCopySuccess(''), 3000);
+  };
+
+  const handlePrint = () => {
+    window.print();
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans p-4 md:p-8">
+      {/* Print Styles */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @media print {
+          body * { visibility: hidden; }
+          #print-area, #print-area * { visibility: visible; }
+          #print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 20px; }
+          .no-print { display: none !important; }
+          .page-break { page-break-before: always; }
+        }
+        .arabic-text { font-family: 'Amiri', 'Cairo', serif; line-height: 2; }
+      `}} />
+
+      <div className="max-w-6xl mx-auto space-y-6 no-print">
+        
+        {/* Header */}
+        <header className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-emerald-700 flex items-center gap-2">
+              <BookOpen className="w-6 h-6" />
+              Generator Soal Ujian
+            </h1>
+            <p className="text-slate-500 mt-1">Buat soal ujian bahasa Arab Fusha profesional dalam hitungan detik.</p>
+          </div>
+          <div className="hidden md:block text-right arabic-text">
+            <h2 className="text-xl font-bold text-emerald-800" dir="rtl">مولد أسئلة اللغة العربية</h2>
+          </div>
+        </header>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* Left Column: Input */}
+          <div className="lg:col-span-5 space-y-4">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+              <label className="block text-sm font-semibold text-slate-700 mb-2">
+                Masukkan Materi Pelajaran / Teks Bacaan
+              </label>
+              <textarea
+                value={material}
+                onChange={(e) => setMaterial(e.target.value)}
+                placeholder="Tempel materi berupa teks bahasa Arab atau penjelasan bahasa Indonesia di sini..."
+                className="w-full h-64 p-4 border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 transition-all resize-none text-base"
+                dir="auto"
+              />
+              
+              {error && (
+                <div className="mt-4 p-3 bg-red-50 text-red-700 rounded-lg flex items-start gap-2 text-sm">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  <p>{error}</p>
+                </div>
+              )}
+
+              <button
+                onClick={handleGenerate}
+                disabled={isLoading}
+                className={`mt-4 w-full py-3 px-4 rounded-xl font-semibold text-white flex items-center justify-center gap-2 transition-all ${
+                  isLoading 
+                    ? 'bg-slate-400 cursor-not-allowed' 
+                    : 'bg-emerald-600 hover:bg-emerald-700 hover:shadow-md'
+                }`}
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Menyusun Soal...
+                  </>
+                ) : (
+                  <>
+                    <FileText className="w-5 h-5" />
+                    Buat Soal Sekarang
+                  </>
+                )}
+              </button>
+            </div>
+            
+            <div className="bg-blue-50 rounded-2xl p-5 border border-blue-100">
+              <h3 className="text-blue-800 font-semibold mb-2 flex items-center gap-2">
+                <CheckCircle2 className="w-5 h-5" />
+                Format Output:
+              </h3>
+              <ul className="text-sm text-blue-700 space-y-1 ml-7 list-disc">
+                <li>3 Soal Pilihan Ganda (A, B, C, D)</li>
+                <li>3 Soal Benar / Salah (صح أو خطأ)</li>
+                <li>1 Soal Essay Pemahaman</li>
+                <li>Kunci Jawaban Lengkap</li>
+              </ul>
+            </div>
+          </div>
+
+          {/* Right Column: Output */}
+          <div className="lg:col-span-7">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 min-h-[500px] flex flex-col relative overflow-hidden">
+              
+              {/* Output Toolbar */}
+              <div className="border-b border-slate-100 bg-slate-50 p-4 flex justify-between items-center">
+                <h3 className="font-semibold text-slate-700">Hasil Generator</h3>
+                <div className="flex gap-2">
+                  <button 
+                    onClick={handleCopy}
+                    disabled={!result || isLoading}
+                    className="p-2 text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
+                    title="Salin Teks"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span className="hidden sm:inline">Salin</span>
+                  </button>
+                  <button 
+                    onClick={handlePrint}
+                    disabled={!result || isLoading}
+                    className="p-2 text-slate-600 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 text-sm font-medium"
+                    title="Download PDF / Cetak"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span className="hidden sm:inline">PDF/Cetak</span>
+                  </button>
+                </div>
+              </div>
+
+              {copySuccess && (
+                <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-4 py-2 rounded-full text-sm shadow-lg animate-fade-in-down z-10">
+                  {copySuccess}
+                </div>
+              )}
+
+              {/* Output Content */}
+              <div className="p-6 overflow-auto flex-1 bg-white">
+                {!result && !isLoading && (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400">
+                    <BookOpen className="w-16 h-16 mb-4 opacity-20" />
+                    <p>Hasil pembuatan soal akan tampil di sini.</p>
+                  </div>
+                )}
+
+                {isLoading && (
+                  <div className="h-full flex flex-col items-center justify-center text-emerald-600">
+                    <Loader2 className="w-12 h-12 animate-spin mb-4" />
+                    <p className="animate-pulse font-medium">Memproses bahasa Arab fusha...</p>
+                  </div>
+                )}
+
+                {result && !isLoading && (
+                  <div id="print-area" className="arabic-text text-xl text-slate-800" dir="rtl">
+                    <div className="text-center mb-8 pb-4 border-b-2 border-slate-800">
+                      <h2 className="text-3xl font-bold mb-2">أسئلة اختبار اللغة العربية</h2>
+                      <p className="text-lg text-slate-600">اقرأ النص جيداً ثم أجب عن الأسئلة الآتية:</p>
+                    </div>
+
+                    {/* Section 1: MCQ */}
+                    <div className="mb-8">
+                      <h3 className="text-2xl font-bold mb-4 text-emerald-800">أولاً: اختر الإجابة الصحيحة (أ، ب، ج، د) مما يأتي:</h3>
+                      <div className="space-y-6">
+                        {result.mcq.map((q, idx) => (
+                          <div key={idx} className="bg-slate-50 p-4 rounded-xl border border-slate-100 break-inside-avoid">
+                            <p className="font-semibold mb-3">{idx + 1}. {q.question}</p>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pl-4">
+                              <div className="flex gap-2"><span className="font-bold w-6 text-emerald-700">أ)</span> <span>{q.options.A}</span></div>
+                              <div className="flex gap-2"><span className="font-bold w-6 text-emerald-700">ب)</span> <span>{q.options.B}</span></div>
+                              <div className="flex gap-2"><span className="font-bold w-6 text-emerald-700">ج)</span> <span>{q.options.C}</span></div>
+                              <div className="flex gap-2"><span className="font-bold w-6 text-emerald-700">د)</span> <span>{q.options.D}</span></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Section 2: True/False */}
+                    <div className="mb-8">
+                      <h3 className="text-2xl font-bold mb-4 text-emerald-800">ثانياً: ضع علامة (صح) أو (خطأ) أمام العبارات الآتية:</h3>
+                      <div className="space-y-3 pl-2">
+                        {result.tf.map((q, idx) => (
+                          <div key={idx} className="flex gap-3 items-start p-2 hover:bg-slate-50 rounded-lg break-inside-avoid">
+                            <span className="font-semibold text-emerald-700 min-w-[20px]">{idx + 1}.</span>
+                            <span className="min-w-[60px] text-slate-400 tracking-widest text-center border-b border-dashed border-slate-300">( &nbsp; &nbsp; &nbsp; )</span>
+                            <p className="flex-1">{q.statement}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Section 3: Essay */}
+                    <div className="mb-8 page-break-after">
+                      <h3 className="text-2xl font-bold mb-4 text-emerald-800">ثالثاً: أجب عن السؤال الآتي بالتفصيل:</h3>
+                      <div className="bg-emerald-50 p-5 rounded-xl border border-emerald-100 break-inside-avoid">
+                        <p className="font-semibold mb-8">1. {result.essay.question}</p>
+                        {/* Lines for writing answer */}
+                        <div className="space-y-6">
+                          <div className="border-b border-slate-300 w-full"></div>
+                          <div className="border-b border-slate-300 w-full"></div>
+                          <div className="border-b border-slate-300 w-full"></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Answer Key (Printed on a new page theoretically, or visually separated) */}
+                    <div className="page-break mt-12 pt-8 border-t-2 border-dashed border-slate-300">
+                      <div className="bg-slate-800 text-white p-6 rounded-2xl break-inside-avoid">
+                        <h3 className="text-2xl font-bold mb-6 text-center text-emerald-400">مفتاح الإجابة (Kunci Jawaban)</h3>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                          <div>
+                            <h4 className="font-bold mb-3 border-b border-slate-600 pb-2">أولاً (الاختياري):</h4>
+                            <ul className="space-y-2">
+                              {result.mcq.map((q, idx) => (
+                                <li key={idx} className="flex gap-2">
+                                  <span className="w-6">{idx + 1}.</span>
+                                  <span className="text-emerald-300 font-bold">{q.correctOption}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+
+                          <div>
+                            <h4 className="font-bold mb-3 border-b border-slate-600 pb-2">ثانياً (صح / خطأ):</h4>
+                            <ul className="space-y-2">
+                              {result.tf.map((q, idx) => (
+                                <li key={idx} className="flex gap-2">
+                                  <span className="w-6">{idx + 1}.</span>
+                                  <span className={q.isTrue ? "text-emerald-300" : "text-red-300"}>
+                                    {q.isTrue ? "صح (Benar)" : "خطأ (Salah)"}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+
+                        <div className="mt-6">
+                          <h4 className="font-bold mb-3 border-b border-slate-600 pb-2">ثالثاً (المقالي):</h4>
+                          <p className="text-emerald-50 leading-relaxed bg-slate-700 p-4 rounded-lg">
+                            {result.essay.guidance}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
